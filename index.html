@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+  <style type="text/css">
+    body{
+      margin:0;
+      padding:0;
+    }
+    canvas{
+     position:absolute;
+     top:0px;
+     left:0px;
+    }
+  </style>
+  <title>Amoeba</title>
+  </head>
+  <body>
+  <canvas id="screen" width="1533" height="1278"></canvas>
+  <script>
+  var Geom = {
+    getHull: function(points){
+      function cmp(x,y){  
+        if (x > y) return 1; if (x < y) return -1;
+        return 0;
+      } 
+      function turn(p, q, r){
+        return cmp((q[0]-p[0])*(r[1]-p[1])-(r[0]-p[0])*(q[1]-p[1]),0);
+      }
+      function next_hull_pt(points,p){
+        var q = p,r,t;
+        for (var i = 0; i < points.length; i++) {
+          r = points[i];
+          t = turn(p, q, r);
+          if(t==-1||t==0 && Geom.sqdistance(p, r)>Geom.sqdistance(p,q)) q=r;
+        }
+        return q;
+      }
+      var left,point;
+      for (var i = 0; i < points.length; i++){
+          point = points[i];
+          if (!left || point[0] < left[0])left = point;
+      }
+      var hull = [left], p, q;
+      for (var i = 0; i < hull.length; i++) {
+          p = hull[i];
+          q = next_hull_pt(points, p);
+          if (q[0] != hull[0][0] || q[1] != hull[0][1]) hull.push(q);
+      }
+      hull.push(left);
+      return hull;
+      
+    },
+    sqdistance: function(pointA,pointB){          
+      var dx = pointA.x - pointB.x;
+      var dy = pointA.y - pointB.y;
+      return Math.pow(dx,2)+Math.pow(dy,2);
+    },
+    distance: function(pointA,pointB){   
+      return Math.sqrt(Geom.sqdistance(pointA,pointB));
+    },
+    vectorRad: function(pointA,pointB){
+      var dy = pointB.y - pointA.y;
+      var dx = pointB.x - pointA.x;
+      return Math.atan2(dy, dx);       
+    },
+    vectorAngle: function(pointA,pointB){
+      return Geom.vectorRad(pointA,pointB) * 180/Math.PI;       
+    },
+    angleDelta: function(a,b){
+      return Math.atan2(Math.sin(a-b), Math.cos(a-b))
+    },
+    rotatePoint: function(p, o, a) {
+      a = a * Math.PI / 180.0;
+      return {
+        x: Math.cos(a) * (p.x-o.x) - Math.sin(a) * (p.y-o.y) + o.x,
+        y: Math.sin(a) * (p.x-o.x) + Math.cos(a) * (p.y-o.y) + o.y
+      };
+    },
+    getProximity: function(p,a){
+      var best = -1;
+      var dist = 0;
+      var min = Number.POSITIVE_INFINITY;
+      for(var i=0;i<a.length;i++){
+        dist = Geom.sqdistance(p,a[i]);
+        if(dist<min){
+          min = dist;
+          best = i;
+        }
+      }
+      return a[best];
+    },
+    arcPoint: function(p, t, l){
+      return {x:p.x+l*Math.cos(t),y:p.y+l*Math.sin(t)}
+    },
+    getCenter: function(p){
+      var mp = {x:0,y:0};
+      var p_length = p.length;
+      for(var i=0; i<p_length;i++){
+        mp.x += p[i].x;
+        mp.y += p[i].y;    
+      }
+      mp.x /= p_length;
+      mp.y /= p_length;
+      return mp;
+    },
+    makeNgon: function(
+      sides, // int
+      radius, // float
+      offset, // Point
+      angle // float - angle to start with
+    ){
+      var points = [];
+      var increment = 2*Math.PI/sides;
+      for (var i = 0; i<sides; i++){                  
+          points.push(
+            {
+              x:offset.x + radius * Math.cos(angle),
+              y:offset.y + radius * Math.sin(angle)
+            }
+          );
+          angle += increment;
+      }
+      return points;
+    },
+  }
+  var cv = document.getElementById("screen");
+  var ctx = cv.getContext("2d");
+  var w,h,mouse={x:0,y:0};
+  var amoeba =[];
+  var limit = 500;
+  function resize(){
+    console.log("resize");  
+    cv.width = ctx.width = w = window.innerWidth || document.documentElement.clientWidth || document.getElementsByTagName('body')[0].clientWidth;
+    cv.height = ctx.height = h =   window.innerHeight || document.documentElement.clientHeight || document.getElementsByTagName('body')[0].clientHeight;
+  }
+  
+  function Amoeboid(pos,ppods,size){
+    t = this;
+    t.data = {
+      max_speed:0.1,
+      max_angle_speed:5*180/Math.PI,
+      size:size,
+      min_distance:0.8,
+      max_distance:1.5,
+      min_angle:-1.0,
+      max_angle:1.0,
+      ppod: Geom.makeNgon(ppods,size,pos,0),
+      order:[]
+    }
+  };
+  var draw_ppod = true;
+  var draw_lattice = true;
+  var draw_handles = true;
+  var draw_hull = true;
+  function onKeyUp(event){
+    var e = window.event ? window.event : event;
+    if(e.keyCode == 49){
+      draw_ppod = (draw_ppod)?false:true;
+    }else if(e.keyCode == 50){
+      draw_lattice = (draw_lattice)?false:true;      
+    }else if(e.keyCode == 51){
+      draw_handles = (draw_handles)?false:true;      
+    }else if(e.keyCode == 52){
+      draw_hull = (draw_hull)?false:true;      
+    }
+  }
+  function onClick(e){
+    console.log("click");
+    spawn();
+  }
+  function onMove(event){
+    var e = window.event?window.event:event;
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;                       
+  }
+  
+  function drawMarker(p){
+    if(Object.prototype.toString.call(p) == '[object Array]'){
+      for(var i=0;i<p.length;i++) drawMarker(p[i]);
+      return;
+    }
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,5,0,Math.PI*2,true); 
+    ctx.closePath();
+    ctx.globalAlpha =0.5;
+    ctx.fillStyle="#FFFFFF";
+    ctx.fill();
+  }
+  function drawLinks(c,p){
+    for(var i=0; i<p.length; i++){    
+      ctx.beginPath();
+      ctx.moveTo(c.x,c.y);
+      ctx.lineTo(p[i].x,p[i].y);
+      ctx.closePath();
+      ctx.globalAlpha =0.5;
+      ctx.strokeStyle="#FFFFFF";
+      ctx.stroke();
+    }
+  }
+  function drawHull(p){
+    ctx.beginPath();
+    ctx.moveTo(p[0].x, p[0].y);
+    for (i=0;i<p.length+1;i++){
+      var cur = (i)%p.length;
+      var next = (i+1)%p.length;
+      var xc = (p[cur].x + p[next].x) / 2;
+      var yc = (p[cur].y + p[next].y) / 2;
+      ctx.quadraticCurveTo(p[cur].x, p[cur].y, xc, yc);
+    }   
+    //ctx.quadraticCurveTo(p[i].x, p[i].y, p[i+1].x,p[i+1].y);
+    ctx.closePath();
+    ctx.globalAlpha =.2;
+    ctx.fillStyle="#FFFFFF";
+    ctx.fill();
+  }
+  function drawLattice(p){
+    ctx.beginPath();
+    ctx.moveTo(p[0].x,p[0].y);
+    for(var i=0;i<p.length;i++)ctx.lineTo(p[i].x,p[i].y);
+    ctx.closePath();
+    ctx.globalAlpha =.5;
+    ctx.strokeStyle="#FFFFFF";
+    ctx.stroke();
+  }
+  function loop(){   
+    ctx.globalAlpha =1;
+    ctx.fillStyle="#160303";
+    ctx.fillRect(0,0,w,h);
+    for(var i=0;i<amoeba.length;i++)loopAmoeba(amoeba[i]);
+    setTimeout(loop,1000/30);
+  }
+  
+  function loopAmoeba(a){
+    var ppod_len = a.data.ppod.length;
+    var center = Geom.getCenter(a.data.ppod);
+    /* Global Random */
+    if(!a.angle)a.angle = (Math.random()*360)*180/Math.PI;
+    if(!a.angle_speed)a.angle_speed = Math.random()*.2;
+    if(!a.speed)a.speed = Math.random(); 
+    a.angle_speed+=(Math.random()-Math.random())*0.01; 
+    a.speed+=(Math.random()-Math.random())*0.01;
+    a.angle_speed = Math.max(-0.02,Math.min(0.02,a.angle_speed));
+    a.speed =  Math.max(-1,Math.min(1,a.speed));
+    a.angle+=a.angle_speed;
+    for(var i=0;i<ppod_len;i++){  
+      var cur = a.data.ppod[i];         
+      if(!cur.angle)cur.angle = (Math.random()*360)*180/Math.PI;
+      if(!cur.angle_speed)cur.angle_speed = Math.random()*.2;
+      if(!cur.speed)cur.speed = Math.random();      
+      if(!cur.out)cur.out = [];
+      
+      cur.out.length = 0;
+      var max_tension = a.data.max_distance*a.data.size;
+      var min_tension = a.data.min_distance*a.data.size;
+      /* Global */   
+      cur.out.push(Geom.arcPoint(cur,a.angle,a.speed));
+      /* Random */
+      cur.angle_speed+=(Math.random()-Math.random())*0.01; 
+      cur.speed+=(Math.random()-Math.random())*0.01;
+      cur.angle_speed = Math.max(-.1,Math.min(.1,cur.angle_speed));
+      cur.speed = Math.max(-1,Math.min(1,cur.speed));
+      cur.angle+=cur.angle_speed;
+      cur.out.push(Geom.arcPoint(cur,cur.angle,cur.speed));
+      
+      /* Mouse effect on center */
+      var mouse_distance = Geom.distance(center,mouse);
+      if(mouse_distance<100&&mouse_distance>5){           
+        var mouse_angle = Geom.vectorRad(center,mouse);
+        cur.out.push(Geom.arcPoint(cur,mouse_angle,((mouse_distance/100))*.5));
+      }
+      /* Mouse effect on pseudopod */
+      var mouse_distance = Geom.distance(cur,mouse);
+      if(mouse_distance<300&&mouse_distance>a.data.size){           
+        var mouse_angle = Geom.vectorRad(cur,mouse);
+        cur.out.push(Geom.arcPoint(cur,mouse_angle,((mouse_distance/300))*1));
+      }
+      /* Tension effect on pseudopod */
+      var cur_distance = Geom.distance(cur,center);       
+      var cur_angle = Geom.vectorRad(center,cur);
+      if(cur_distance>max_tension){        
+        cur.out.push(Geom.arcPoint(center,cur_angle,cur_distance-cur_distance/max_tension));
+      }else if (cur_distance<min_tension){ 
+        cur.out.push(Geom.arcPoint(center,cur_angle,(cur_distance+(cur_distance/min_tension)*1.5)));
+      }
+      /* Angle Spring */      
+      var prev = a.data.ppod[(i+ppod_len-1)%ppod_len];
+      var next = a.data.ppod[(i+1)%ppod_len];
+      var cur_distance = Geom.distance(cur,center);    
+      var cur_angle = Geom.vectorRad(center,cur);
+      var prev_angle = Geom.vectorRad(center,prev);  
+      var prev_delta = Geom.angleDelta(cur_angle,prev_angle);
+      
+      var next_angle = Geom.vectorRad(center,next);   
+      var next_delta = Geom.angleDelta(cur_angle,next_angle);
+      
+      var max_delta = Geom.angleDelta(prev_angle,next_angle);
+      var spring = (prev_delta+next_delta)/Math.abs(max_delta);
+      cur.out.push(Geom.arcPoint(center,cur_angle-(spring*.05),cur_distance));
+      
+    }
+    /* Effect on closest */
+    var closest = Geom.getProximity(mouse,a.data.ppod);
+    var cur_distance = Geom.distance(closest,mouse);  
+    if(cur_distance<250 && cur_distance>10){
+      var angle = Geom.vectorRad(closest,mouse);
+      closest.out.push(Geom.arcPoint(closest,angle,(cur_distance/250)*2));
+    }
+       
+    /* get median and render*/
+    for(var i = 0; i<ppod_len; i++){  
+      var cur = a.data.ppod[i];         
+      if(cur.out.length>0){        
+        var median = Geom.getCenter(cur.out);
+        cur.x = median.x;
+        cur.y = median.y;
+      }
+    }
+  
+    if(draw_handles)drawMarker(center);
+    if(draw_ppod)drawLinks(center,a.data.ppod);
+    if(draw_handles)drawMarker(a.data.ppod);
+    if(draw_lattice)drawLattice(a.data.ppod);
+    if(draw_hull)drawHull(a.data.ppod);   
+  }
+  
+  function spawn(){  
+    amoeba.length = 0;
+    for(var i = 0;i<(10+(Math.random()*100)|0);i++){
+      amoeba.push(
+        new Amoeboid(
+          {x:w*Math.random(),y:h*Math.random()},
+          3+(Math.random()*12)|0,
+          30+Math.random()*30
+        )
+      );
+    }
+  }
+  function init(){
+    resize();
+    cv.addEventListener('onresize', resize, false); 
+    cv.addEventListener('click', onClick, false); 
+    cv.addEventListener('mousemove', onMove, false);
+    window.addEventListener('keyup', onKeyUp, false);
+    spawn();
+    loop();
+  } 
+  init();
+  </script>
+  
+
+</body></html>
